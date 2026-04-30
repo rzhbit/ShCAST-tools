@@ -4,7 +4,7 @@ Targeted Genetic Screening in Bacteria with a Cas12k-guided Transposase
 
 ShCAST is an analysis pipeline for sequencing data generated from Cas12k-guided transposase experiments in bacteria. It filters paired-end reads by library-specific handle sequences, extracts UMI sequences, trims adapters, maps reads to a reference genome, and reports insertion-site counts.
 
-This repository contains the analysis code associated with the study **"Targeted genetic screening in bacteria with a Cas12k-guided transposase"**.
+This repository contains the analysis code associated with the study **"Targeted genetic screening in bacteria with a Cas12k-guided transposase"**, DOI: 10.1016/j.celrep.2021.109635.
 
 Contact: renzh6@mail2.sysu.edu.cn
 
