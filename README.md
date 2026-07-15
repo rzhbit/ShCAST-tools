@@ -30,12 +30,11 @@ Contact: renzh6@mail2.sysu.edu.cn
 
 Install the following tools and make sure they are available in your `PATH`:
 
-- Python 3
+- Python 3.10 or newer
 - fastp
 - cutadapt
 - bowtie2
 - samtools
-- Standard Unix utilities: `grep`, `sort`, `cat`, `rm`
 
 Python scripts use only Python standard-library modules.
 
@@ -61,7 +60,7 @@ bowtie2-build reference.fa reference_index
 Run the full pipeline:
 
 ```bash
-bash ShCAST_run.sh sample.R1.fq.gz sample.R2.fq.gz LE reference_index
+bash ShCAST_run.sh sample.R1.fq.gz sample.R2.fq.gz LE reference_index 70
 ```
 
 Arguments:
@@ -72,6 +71,7 @@ Arguments:
 | `sample.R2.fq.gz` | Read 2 FASTQ file. |
 | `LE` / `RE` | Library mode. Use `LE` for left-end libraries and `RE` for right-end libraries. |
 | `reference_index` | Bowtie2 index prefix. |
+| `biotin_primer_base` | Optional experiment-specific handle length/search position. Defaults to `70`. The wrapper passes it to read filtering and `cutadapt -u`. |
 
 ## Workflow
 
@@ -80,25 +80,25 @@ The complete workflow contains the following steps:
 1. Quality filter raw paired-end reads with `fastp`.
 2. Identify reads containing the expected Cas12k handle and READ2 seed.
 3. Extract the UMI from the beginning of the seed-containing read.
-4. Write passed and failed paired reads into separate FASTQ files.
+4. Validate paired FASTQ records and write passed and failed read pairs into separate files.
 5. Trim remaining handle/adaptor sequences with `cutadapt`.
 6. Map filtered reads to the reference genome with `bowtie2`.
 7. Filter mapped reads with `samtools`.
-8. Infer insertion sites from SAM flags, read orientation, mate position, and alignment position.
-9. Merge nearby insertion positions within a small window and count supporting UMIs/reads.
+8. Infer insertion sites from SAM flags, read orientation, mate position, alignment position, and CIGAR reference span.
+9. Sort sites by reference, strand, and position, then merge nearby positions and count supporting UMIs/reads.
 
 ## Script Usage
 
 ### 1. End-to-end pipeline
 
 ```bash
-bash ShCAST_run.sh <reads.R1.fq.gz> <reads.R2.fq.gz> <mode> <bowtie2_index>
+bash ShCAST_run.sh <reads.R1.fq.gz> <reads.R2.fq.gz> <mode> <bowtie2_index> [biotin_primer_base]
 ```
 
 Example:
 
 ```bash
-bash ShCAST_run.sh sample.R1.fq.gz sample.R2.fq.gz LE reference_index
+bash ShCAST_run.sh sample.R1.fq.gz sample.R2.fq.gz LE reference_index 70
 ```
 
 ### 2. Filter reads and extract UMIs
@@ -122,6 +122,15 @@ Key parameters:
 | `--biotin_primer_base` | `70` | Search window length for the READ1 Cas12k handle. |
 | `--umi_length` | `8` | Length of the UMI extracted from the beginning of the seed-containing read. |
 
+Input validation:
+
+- R1 and R2 must contain the same number of FASTQ records.
+- Corresponding R1 and R2 records must have matching read identifiers; conventional `/1` and `/2` suffixes are accepted.
+- Every FASTQ record must contain exactly four lines, with headers beginning with `@` and separator lines beginning with `+`.
+- Sequence and quality strings must have equal lengths.
+- A seed-containing read must be at least as long as the requested UMI length.
+- Incomplete, malformed, or unpaired input causes the script to stop with an explanatory error instead of silently dropping reads.
+
 Library-specific seed sequences:
 
 | Mode | READ1 seed |
@@ -144,6 +153,8 @@ Read-filtering outputs:
 
 Note: The output prefix is intentionally documented as `Fliter`, matching the current script output names.
 
+Output files are created in the same directory as their corresponding input files. For example, `/data/sample.R1.fq.gz` produces `/data/FliterPass_sample.R1.fq.gz` and `/data/FliterFail_sample.R1.fq.gz`.
+
 ### 3. Count insertion sites
 
 ```bash
@@ -152,14 +163,14 @@ python ShCAST_CountSite.py \
   --outfile sample_Cas12k_insertion_sites.txt
 ```
 
-The counting script first generates an intermediate insertion-site file, then writes a merged count table.
+The counting script generates a raw insertion-site file, creates a sorted intermediate file, and then writes a merged count table. Sorting is performed in Python and does not require external Unix sorting utilities.
 
 Intermediate files:
 
 | Output | Description |
 | --- | --- |
 | `insertion_site_<sample>_Cas12k_bowtie2.txt` | Raw insertion-site records parsed from the SAM file. |
-| `sort.insertion_site_<sample>_Cas12k_bowtie2.txt` | Sorted insertion-site records used for counting. |
+| `sort.insertion_site_<sample>_Cas12k_bowtie2.txt` | Records sorted by reference sequence, strand, and genomic position for counting. |
 
 Final output:
 
@@ -174,6 +185,10 @@ Final output:
 | `strand` | Insertion-site strand. |
 | `umi_count` | Number of unique UMIs supporting the site. |
 | `reads_count` | Number of reads supporting the site. |
+
+For forward alignments, the insertion position is based on the SAM alignment start. For reverse alignments, the endpoint is calculated from the CIGAR operations that consume reference bases (`M`, `D`, `N`, `=`, and `X`), rather than from read-sequence length alone. This correctly handles insertions, deletions, clipping, and other non-trivial alignments.
+
+Nearby positions are merged only when they belong to the same reference sequence and strand. An input with no qualifying alignments produces a valid output file containing only the header.
 
 ## Main Pipeline Outputs
 
@@ -192,9 +207,12 @@ For an input sample named `sample.R1.fq.gz` / `sample.R2.fq.gz`, the full pipeli
 ## Notes
 
 - Run the pipeline in a clean working directory when possible. Intermediate files are written to the current directory and repeated runs with the same sample name may overwrite existing outputs.
+- The wrapper accepts FASTQ paths from other directories. Intermediate R1/R2 files are written beside their corresponding inputs, and the report and final results are written beside R1. Input filenames must share a sample prefix and end with `.R1.fq.gz` and `.R2.fq.gz`.
 - Make sure the library mode is correct. `LE` and `RE` use different READ1 seed sequences.
 - The wrapper script derives the sample prefix by removing `.R1.fq.gz` from the R1 filename.
-- The counting step merges positions by strand and groups nearby positions within a 6 bp window.
+- The counting step keeps reference sequences and strands separate and groups consecutive positions within a 6 bp window.
+- SAM records with unmapped/invalid mate coordinates or mate distances greater than 10,000 bp are excluded from insertion-site counting.
+- Insertion-site sorting uses a temporary SQLite database, so large runs require sufficient free space in the system temporary directory but do not keep all site records in memory.
 - Large datasets may require adjusting thread counts in `ShCAST_run.sh` for `fastp`, `bowtie2`, and `samtools`.
 
 ## License
